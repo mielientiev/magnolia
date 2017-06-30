@@ -225,64 +225,70 @@ class Macros(val c: whitebox.Context) {
     
     val directlyReentrant = Some(genericType) == currentStack.frames.headOption.map(_.genericType)
     val typeConstructor: Type = weakTypeOf[Typeclass].typeConstructor
-    
-    val derivationTypeclass = weakTypeOf[Derivation[_]].typeConstructor
-    val coderivationTypeclass = weakTypeOf[Coderivation[_]].typeConstructor
-    val coderivation2Typeclass = weakTypeOf[Coderivation2[_]].typeConstructor
 
-    val derivationType = appliedType(derivationTypeclass, List(typeConstructor))
-    val coderivationType = appliedType(coderivationTypeclass, List(typeConstructor))
-    val coderivation2Type = appliedType(coderivation2Typeclass, List(typeConstructor))
+    //val validInScopeImplicit: Option[Tree] =
+    //  if(currentStack.frames.isEmpty) Try(c.inferImplicitValue(appliedType(typeConstructor, genericType), false, true)).toOption else None
 
-    def findDerivationImplicit[T <: GeneralDerivationImplicit](derivationType: c.Type, wrap: Tree => T):
-        Try[GeneralDerivationImplicit] =
-      Try(wrap(c.untypecheck(c.inferImplicitValue(derivationType, false, false))))
+    //println(validInScopeImplicit)
 
-    val derivationImplicit =
-      findDerivationImplicit(derivationType, DerivationImplicit)
-      .orElse(findDerivationImplicit(coderivationType, Coderivation1Implicit))
-      .orElse(findDerivationImplicit(coderivation2Type,
-          Coderivation2Implicit)) match {
-        case Failure(e) =>
-          c.info(c.enclosingPosition, s"could not find an implicit instance of "+
-            s"Derivation[$typeConstructor] or "+
-            s"Coderivation[$typeConstructor] or "+
-            s"Coderivation2[$typeConstructor]", true)
-          throw e
-        case Success(di) =>
-          di
+    //validInScopeImplicit.getOrElse {
+      val derivationTypeclass = weakTypeOf[Derivation[_]].typeConstructor
+      val coderivationTypeclass = weakTypeOf[Coderivation[_]].typeConstructor
+      val coderivation2Typeclass = weakTypeOf[Coderivation2[_]].typeConstructor
+
+      val derivationType = appliedType(derivationTypeclass, List(typeConstructor))
+      val coderivationType = appliedType(coderivationTypeclass, List(typeConstructor))
+      val coderivation2Type = appliedType(coderivation2Typeclass, List(typeConstructor))
+
+      def findDerivationImplicit[T <: GeneralDerivationImplicit](derivationType: c.Type, wrap: Tree => T):
+          Try[GeneralDerivationImplicit] =
+        Try(wrap(c.untypecheck(c.inferImplicitValue(derivationType, false, false))))
+
+      val derivationImplicit =
+        findDerivationImplicit(derivationType, DerivationImplicit)
+        .orElse(findDerivationImplicit(coderivationType, Coderivation1Implicit))
+        .orElse(findDerivationImplicit(coderivation2Type,
+            Coderivation2Implicit)) match {
+          case Failure(e) =>
+            c.info(c.enclosingPosition, s"could not find an implicit instance of "+
+              s"Derivation[$typeConstructor] or "+
+              s"Coderivation[$typeConstructor] or "+
+              s"Coderivation2[$typeConstructor]", true)
+            throw e
+          case Success(di) =>
+            di
+        }
+
+      if(directlyReentrant) throw DirectlyReentrantException()
+     
+      if(c.enclosingMacros.size == 1) currentStack.errors.foreach { error =>
+        if(!emittedErrors.contains(error)) {
+          emittedErrors += error
+          val trace = error.path.mkString("\n    in ", "\n    in ", "\n \n")
+          val msg = s"could not derive ${typeConstructor} instance for type ${error.genericType}"
+          c.info(c.enclosingPosition, msg+trace, true)
+        }
       }
 
-    if(directlyReentrant) throw DirectlyReentrantException()
-   
-    currentStack.errors.foreach { error =>
-      if(!emittedErrors.contains(error)) {
-        emittedErrors += error
-        val trace = error.path.mkString("\n    in ", "\n    in ", "\n \n")
-        val msg = s"could not derive ${typeConstructor} instance for type ${error.genericType}"
-        c.info(c.enclosingPosition, msg+trace, true)
+      val result: Option[Tree] = if(!currentStack.frames.isEmpty) {
+        findType(genericType) match {
+          case None =>
+            directInferImplicit(genericType, typeConstructor, derivationImplicit)
+          case Some(enclosingRef) =>
+            val methodAsString = enclosingRef.toString
+            val searchType = appliedType(typeConstructor, genericType)
+            Some(q"_root_.magnolia.Lazy[$searchType]($methodAsString)")
+        }
+      } else directInferImplicit(genericType, typeConstructor, derivationImplicit)
+     
+      if(currentStack.frames.isEmpty) recursionStack = ListMap()
+
+      result.map { tree =>
+        if(currentStack.frames.isEmpty) c.untypecheck(removeLazy.transform(tree)) else tree
+      }.getOrElse {
+        c.abort(c.enclosingPosition, "could not infer typeclass for type $genericType")
       }
-    }
-
-    val result: Option[Tree] = if(!currentStack.frames.isEmpty) {
-      findType(genericType) match {
-        case None =>
-          directInferImplicit(genericType, typeConstructor, derivationImplicit)
-        case Some(enclosingRef) =>
-          val methodAsString = enclosingRef.toString
-          val searchType = appliedType(typeConstructor, genericType)
-          Some(q"_root_.magnolia.Lazy[$searchType]($methodAsString)")
-      }
-    } else directInferImplicit(genericType, typeConstructor, derivationImplicit)
-   
-    if(currentStack.frames.isEmpty) recursionStack = ListMap()
-
-    result.map { tree =>
-      if(currentStack.frames.isEmpty) c.untypecheck(removeLazy.transform(tree)) else tree
-    }.getOrElse {
-      c.abort(c.enclosingPosition, "could not infer typeclass for type $genericType")
-    }
-
+    //}
   }
 }
 
